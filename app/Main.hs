@@ -8,7 +8,6 @@ import qualified System.Console.Terminal.Size as TS
 import System.IO (hFlush, stdout)
 import System.Random
 
--- Data types
 data Cell = Cell
   { charIndex :: Int,
     intensity :: Int -- 0: Inactive, 1-5: Active (5 being the brightest)
@@ -19,63 +18,50 @@ type Column = [Cell]
 
 type Matrix = [Column]
 
--- Constants
 chars :: String
 chars = ['ｱ', 'ｲ', 'ｳ', 'ｴ', 'ｵ', 'ｶ', 'ｷ', 'ｸ', 'ｹ', 'ｺ', 'ｻ', 'ｼ', 'ｽ', 'ｾ', 'ｿ', 'ﾀ', 'ﾁ', 'ﾂ', 'ﾃ', 'ﾄ', 'ﾅ', 'ﾆ', 'ﾇ', 'ﾈ', 'ﾉ', 'ﾊ', 'ﾋ', 'ﾌ', 'ﾍ', 'ﾎ', 'ﾏ', 'ﾐ', 'ﾑ', 'ﾒ', 'ﾓ', 'ﾔ', 'ﾕ', 'ﾖ', 'ﾗ', 'ﾘ', 'ﾙ', 'ﾚ', 'ﾛ', 'ﾜ', 'ﾝ']
 
--- Initialize a random cell
 initCell :: IO Cell
 initCell = do
   charIdx <- randomRIO (0, length chars - 1)
   return $ Cell charIdx 0
 
--- Initialize a random column
 initColumn :: Int -> IO Column
 initColumn h = replicateM h initCell
 
--- Initialize the matrix
 initMatrix :: Int -> Int -> IO Matrix
 initMatrix w h = replicateM w (initColumn h)
 
 -- Update a single column
-updateColumn :: Column -> IO Column
-updateColumn col = do
-  shouldStartNewRain <- (== 0) <$> randomRIO (0, 15 :: Int)
+updateColumn :: Int -> Column -> IO Column
+updateColumn h col = do
+  shouldStartNewRain <- (== 0) <$> randomRIO (0, 20 :: Int)
   newCharIdx <- randomRIO (0, length chars - 1)
-  let newHead =
-        if shouldStartNewRain && intensity (head col) == 0
-          then Cell newCharIdx 5
-          else head col
-  let updatedCol = newHead : init col
-  mapM updateCell updatedCol
+  let rainLength = randomRIO (5, 15) >>= \len -> return (min len h)
+  let activeLength = length $ takeWhile (\c -> intensity c > 0) col
+  newHead <- if shouldStartNewRain && activeLength == 0
+             then do
+               len <- rainLength
+               return $ replicate len (Cell newCharIdx 5) ++ replicate (h - len) (Cell 0 0)
+             else return [Cell 0 0]
+  return $ take h $ newHead ++ col
 
 -- Update a single cell
-updateCell :: Cell -> IO Cell
-updateCell (Cell idx i) = do
-  newCharIdx <- randomRIO (0, length chars - 1)
-  let newIntensity = max 0 (i - 1)
-  return $ Cell (if i > 0 then newCharIdx else idx) newIntensity
+updateCell :: Cell -> Cell
+updateCell (Cell idx i)
+  | i > 0 = Cell idx (max 1 (i - 1))
+  | otherwise = Cell idx 0
 
 -- Update the entire matrix
-updateMatrix :: Matrix -> IO Matrix
-updateMatrix = mapM updateColumn
-
--- Render a single cell
-renderCell :: Cell -> (Char, Color)
-renderCell (Cell idx i)
-  | i == 5 = (chars !! idx, White)
-  | i > 0 = (chars !! idx, Green)
-  | otherwise = (' ', Black)
+updateMatrix :: Int -> Matrix -> IO Matrix
+updateMatrix h = mapM (updateColumn h)
 
 -- Define custom color for fading effect
 fadeColor :: Int -> Color
 fadeColor i
-  | i == 0 = Black
-  | i == 1 = Blue
-  | i == 2 = Cyan
-  | i == 3 = Green
-  | i == 4 = Yellow
-  | otherwise = White
+  | i == 5 = White
+  | i > 0 = Green
+  | otherwise = Black
 
 -- Render the entire matrix
 renderMatrix :: Int -> Int -> Matrix -> IO ()
@@ -84,9 +70,10 @@ renderMatrix w h matrix = do
   forM_ [0 .. h - 1] $ \y -> do
     forM_ [0 .. w - 1] $ \x -> do
       let cell = matrix !! x !! y
-      let (char, _color) = renderCell cell
       setSGR [SetColor Foreground Vivid (fadeColor (intensity cell))]
-      putChar char
+      if intensity cell > 0
+        then putChar (chars !! charIndex cell)
+        else putChar ' '
     putChar '\n' -- Move to the next line after each row
   hFlush stdout
 
@@ -98,7 +85,6 @@ getCurrentTerminalSize = do
     Just (TS.Window rows cols) -> return (cols, rows - 1) -- Subtract 1 from rows to prevent scrolling
     Nothing -> return (80, 24) -- Default size if unable to get terminal size
 
--- Adjust matrix size
 adjustMatrixSize :: Int -> Int -> Matrix -> IO Matrix
 adjustMatrixSize w h matrix = do
   let currentW = length matrix
@@ -113,20 +99,24 @@ adjustMatrixSize w h matrix = do
         return $ existingCols ++ newCols
       else return matrix
 
-  return $ map (take h . (\col -> col ++ repeat (Cell 0 0))) newMatrix
+  -- Adjust the height of each column
+  return $ map (adjustColumnHeight h) newMatrix
+  where
+    adjustColumnHeight :: Int -> Column -> Column
+    adjustColumnHeight targetH col
+      | length col < targetH = col ++ replicate (targetH - length col) (Cell 0 0)
+      | length col > targetH = take targetH col
+      | otherwise = col
 
--- Main loop
 mainLoop :: Matrix -> IO ()
 mainLoop matrix = do
   (w, h) <- getCurrentTerminalSize
-  clearScreen
   adjustedMatrix <- adjustMatrixSize w h matrix
-  newMatrix <- updateMatrix adjustedMatrix
-  renderMatrix w h newMatrix
+  newMatrix <- updateMatrix h adjustedMatrix
+  renderMatrix w h (map (map updateCell) newMatrix)
   threadDelay 50000 -- 50ms delay
   mainLoop newMatrix
 
--- Main function
 main :: IO ()
 main = do
   hideCursor
